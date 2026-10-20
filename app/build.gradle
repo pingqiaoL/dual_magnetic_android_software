@@ -10,8 +10,8 @@ android {
         applicationId 'com.climbwheel.mk32'
         minSdk 23
         targetSdk 33
-        versionCode 21
-        versionName '0.8.6'
+        versionCode 24
+        versionName '0.8.9'
 
         testInstrumentationRunner 'android.test.InstrumentationTestRunner'
     }

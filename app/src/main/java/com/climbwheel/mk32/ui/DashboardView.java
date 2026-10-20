@@ -10,6 +10,7 @@ import android.graphics.PorterDuffXfermode;
 import android.graphics.RectF;
 import android.os.SystemClock;
 import android.view.MotionEvent;
+import android.view.ScaleGestureDetector;
 import android.view.View;
 
 import com.climbwheel.mk32.model.TelemetrySnapshot;
@@ -20,6 +21,7 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.List;
 
 /**
  * Minimal 16:10 picture-in-picture dashboard for the MK32 1280x800 display.
@@ -33,10 +35,9 @@ public final class DashboardView extends View {
     private static final float DESIGN_W = 1600f;
     private static final float DESIGN_H = 1000f;
     private static final float HEADER_H = 82f;
-    private static final long THICKNESS_HOLD_MS = 1500;
-    private static final long CHART_WINDOW_MS = 60_000;
-    private static final long COMPACT_CHART_WINDOW_MS = 30_000;
-    private static final long CHART_GAP_MS = 3500;
+    private static final long THICKNESS_HOLD_MS = ThicknessPlot.HOLD_MS;
+    private long chartWindowMs = ChartZoom.DEFAULT_MS;
+    private static final long COMPACT_CHART_WINDOW_MS = 10_000;
 
     private static final int HEADER = Color.rgb(7, 23, 38);
     private static final int PANEL = Color.rgb(9, 29, 47);
@@ -94,6 +95,8 @@ public final class DashboardView extends View {
     private float offsetY;
     private long touchDownAt;
     private String pressedAction;
+    private final ScaleGestureDetector scaleDetector;
+    private boolean scalingGesture;
 
     private final Runnable statusTicker = new Runnable() {
         @Override public void run() {
@@ -105,8 +108,30 @@ public final class DashboardView extends View {
     public DashboardView(Context context) {
         super(context);
         setBackgroundColor(Color.TRANSPARENT);
+        // CLEAR must operate on this view's content, including the white data-page background.
+        // A separate empty saveLayer inside clear() cannot erase that background.
+        setLayerType(View.LAYER_TYPE_HARDWARE, null);
         gridPaint.setColor(GRID);
         gridPaint.setStrokeWidth(1f);
+        scaleDetector = new ScaleGestureDetector(context,
+                new ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                    @Override public boolean onScaleBegin(ScaleGestureDetector detector) {
+                        float x = (detector.getFocusX() - offsetX) / scale;
+                        float y = (detector.getFocusY() - offsetY) / scale;
+                        if (videoPrimary || !chartTouchArea.contains(x, y)) return false;
+                        scalingGesture = true;
+                        chartMoved = true;
+                        pressedAction = null;
+                        return true;
+                    }
+
+                    @Override public boolean onScale(ScaleGestureDetector detector) {
+                        float x = (detector.getFocusX() - offsetX) / scale;
+                        zoomChart(detector.getScaleFactor(),
+                                (x - chartTouchArea.left) / chartTouchArea.width());
+                        return true;
+                    }
+                });
     }
 
     public void setActionListener(ActionListener listener) { actionListener = listener; }
@@ -124,7 +149,7 @@ public final class DashboardView extends View {
         roundStopMs = saved.endMs;
         roundRunning = false;
         chartLive = false;
-        historicalChartEndMs = roundStartMs + CHART_WINDOW_MS;
+        historicalChartEndMs = roundStartMs + chartWindowMs;
         invalidate();
     }
 
@@ -307,7 +332,7 @@ public final class DashboardView extends View {
         text(c, value, 176, 180, 63, TEAL, Paint.Align.LEFT, false);
         text(c, "μm", 188 + measureText(value, 63, false), 180, 32, LIGHT_TEXT, Paint.Align.LEFT, false);
         long endMs = chartEndMs(now);
-        ThicknessHistory.Stats stats = thicknessHistory.stats(endMs - CHART_WINDOW_MS, endMs);
+        ThicknessHistory.Stats stats = thicknessHistory.stats(endMs - chartWindowMs, endMs);
         String summary = stats.count == 0 ? ""
                 : String.format(Locale.CHINA, "点数 %d    最小 %.1f    最大 %.1f    平均 %.1f μm",
                 stats.count, stats.minimum, stats.maximum, stats.average);
@@ -321,6 +346,12 @@ public final class DashboardView extends View {
         text(c, savedDataView ? "返回测量" : "历史数据", history.centerX(), 167, 24,
                 LIGHT_TEXT, Paint.Align.CENTER, true);
         register(savedDataView ? "history_close" : "history_open", history);
+
+        chartButton(c, "chart_zoom_in", "放大 ＋", 100, 250);
+        chartButton(c, "chart_zoom_out", "缩小 −", 265, 415);
+        chartButton(c, "chart_zoom_reset", "复位", 430, 550);
+        text(c, String.format(Locale.CHINA, "%.1f 秒/屏", chartWindowMs / 1000f),
+                570, 217, 18, LIGHT_MUTED, Paint.Align.LEFT, false);
 
         if (!savedDataView) {
             RectF clear = new RectF(995, 187, 1165, 232);
@@ -352,21 +383,22 @@ public final class DashboardView extends View {
         stroke(c, pressed ? TEAL : LIGHT_BORDER,
                 r.left, r.top, r.right, r.bottom, 20, pressed ? 2.5f : 1.5f);
 
-        text(c, "测厚数据", r.left + 22, r.top + 42, 24, LIGHT_TEXT, Paint.Align.LEFT, true);
-        long now = System.currentTimeMillis();
-        String timer = formatElapsed(roundElapsedMs(now));
-        text(c, timer, r.right - 22, r.top + 42, 18,
-                roundRunning ? LIGHT_GREEN : LIGHT_MUTED, Paint.Align.RIGHT, true);
-
-        boolean fresh = isThicknessFresh(now);
-        String value = String.format(Locale.CHINA, "%.1f", displayedThickness(now));
-        text(c, value, r.left + 24, r.top + 96, 48, TEAL, Paint.Align.LEFT, false);
-        text(c, "μm", r.left + 34 + measureText(value, 48, false), r.top + 96,
-                27, LIGHT_TEXT, Paint.Align.LEFT, false);
-        circle(c, fresh ? LIGHT_GREEN : LIGHT_GRAY, r.right - 24, r.top + 86, 5);
-
-        RectF chart = new RectF(r.left + 60, r.top + 117, r.right - 18, r.bottom - 57);
-        drawTimeSeriesChart(c, chart, true, now);
+        String value = String.format(Locale.CHINA, "%.1f", displayedThickness(System.currentTimeMillis()));
+        float size = Math.min(126f, r.height() * .43f);
+        float unitSize = size * .40f;
+        float gap = 12f;
+        float width = measureText(value, size, true) + gap + measureText("μm", unitSize, false);
+        if (width > r.width() - 32f) {
+            float ratio = (r.width() - 32f) / width;
+            size *= ratio;
+            unitSize *= ratio;
+            width = measureText(value, size, true) + gap + measureText("μm", unitSize, false);
+        }
+        float left = r.centerX() - width / 2f;
+        float baseline = r.centerY() + size * .34f;
+        text(c, value, left, baseline, size, LIGHT_TEXT, Paint.Align.LEFT, true);
+        text(c, "μm", left + measureText(value, size, true) + gap,
+                baseline, unitSize, LIGHT_TEXT, Paint.Align.LEFT, false);
     }
 
     private void drawVideoSurface(Canvas c, RectF r, boolean compact) {
@@ -390,10 +422,14 @@ public final class DashboardView extends View {
 
     private void drawTimeSeriesChart(Canvas c, RectF r, boolean compact, long nowMs) {
         gridPaint.setColor(LIGHT_GRID);
-        long windowMs = compact ? COMPACT_CHART_WINDOW_MS : CHART_WINDOW_MS;
+        long windowMs = compact ? COMPACT_CHART_WINDOW_MS : chartWindowMs;
         long endMs = compact ? liveChartEnd(nowMs, COMPACT_CHART_WINDOW_MS) : chartEndMs(nowMs);
         long startMs = endMs - windowMs;
         ThicknessHistory.Stats stats = thicknessHistory.stats(startMs, endMs);
+        long anchor = roundRunning ? nowMs : Math.max(roundStartMs, roundStopMs);
+        List<ThicknessPlot.Point> visible = ThicknessPlot.build(thicknessHistory.samples(),
+                roundStartMs > 0 ? Math.max(roundStartMs, startMs) : startMs,
+                Math.min(anchor, endMs));
 
         float minY;
         float maxY;
@@ -401,11 +437,15 @@ public final class DashboardView extends View {
             minY = 0f;
             maxY = 10f;
         } else {
-            float spread = stats.maximum - stats.minimum;
-            float padding = Math.max(0.5f, spread * 0.18f);
-            minY = Math.max(0f, stats.minimum - padding);
-            maxY = stats.maximum + padding;
+            // Keep a real zero baseline visible when a reading expires.
+            minY = Math.min(0f, stats.minimum);
+            maxY = stats.maximum + Math.max(.5f, Math.abs(stats.maximum) * .15f);
             if (maxY - minY < 1f) maxY = minY + 1f;
+        }
+        // Include a still-held sample just outside the viewport before drawing axis ticks.
+        for (ThicknessPlot.Point point : visible) {
+            minY = Math.min(minY, point.value);
+            maxY = Math.max(maxY, point.value + Math.max(.5f, Math.abs(point.value) * .15f));
         }
 
         int divisionsX = compact ? 3 : 5;
@@ -446,40 +486,63 @@ public final class DashboardView extends View {
             c.restore();
         }
 
-        if (stats.count == 0) return;
-
+        if (roundStartMs <= 0) return;
+        float[] xs = new float[visible.size()];
+        float[] ys = new float[visible.size()];
+        float[] slopes = new float[visible.size()];
+        for (int i = 0; i < visible.size(); i++) {
+            ThicknessPlot.Point sample = visible.get(i);
+            xs[i] = r.left + (sample.timeMs - startMs) * r.width() / windowMs;
+            ys[i] = valueY(sample.value, minY, maxY, r);
+        }
+        for (int i = 0; i < visible.size(); i++) {
+            boolean before = i > 0;
+            boolean after = i + 1 < visible.size();
+            if (before && after) slopes[i] = SmoothCurve.tangent(
+                    xs[i - 1], ys[i - 1], xs[i], ys[i], xs[i + 1], ys[i + 1]);
+            else if (before && xs[i] > xs[i - 1])
+                slopes[i] = (ys[i] - ys[i - 1]) / (xs[i] - xs[i - 1]);
+            else if (after && xs[i + 1] > xs[i])
+                slopes[i] = (ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i]);
+        }
         Path path = new Path();
-        boolean pathStarted = false;
-        long previousTimestamp = 0;
-        int visiblePoints = 0;
-        for (ThicknessHistory.Sample sample : thicknessHistory.samples()) {
-            if (sample.timestampMs < startMs) continue;
-            if (sample.timestampMs > endMs) break;
-            float x = r.left + (sample.timestampMs - startMs) * r.width() / windowMs;
-            float y = valueY(sample.value, minY, maxY, r);
-            if (!pathStarted || sample.timestampMs - previousTimestamp > CHART_GAP_MS) {
-                path.moveTo(x, y);
-                pathStarted = true;
-            } else {
-                path.lineTo(x, y);
+        for (int i = 0; i < visible.size(); i++) {
+            if (i == 0) path.moveTo(xs[i], ys[i]);
+            else {
+                float third = (xs[i] - xs[i - 1]) / 3f;
+                path.cubicTo(xs[i - 1] + third, ys[i - 1] + slopes[i - 1] * third,
+                        xs[i] - third, ys[i] - slopes[i] * third, xs[i], ys[i]);
             }
-            previousTimestamp = sample.timestampMs;
-            visiblePoints++;
         }
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(compact ? 2.2f : 3.0f);
         paint.setStrokeJoin(Paint.Join.ROUND);
         paint.setStrokeCap(Paint.Cap.ROUND);
         paint.setColor(TEAL);
+        int chartClip = c.save();
+        c.clipRect(r);
         c.drawPath(path, paint);
+        c.restoreToCount(chartClip);
         paint.setStyle(Paint.Style.FILL);
 
-        if (visiblePoints == 1) {
-            ThicknessHistory.Sample only = thicknessHistory.nearest(endMs, startMs, endMs);
-            if (only != null) {
-                float x = r.left + (only.timestampMs - startMs) * r.width() / windowMs;
-                circle(c, TEAL, x, valueY(only.value, minY, maxY, r), compact ? 3f : 5f);
-            }
+        float lastLabelRight = -Float.MAX_VALUE;
+        for (int i = 0; i < visible.size(); i++) {
+            if (!visible.get(i).measured || xs[i] < r.left || xs[i] > r.right) continue;
+            circle(c, Color.WHITE, xs[i], ys[i], 6f);
+            circle(c, LIGHT_RED, xs[i], ys[i], 4.5f);
+            String label = String.format(Locale.CHINA, "%.1f", visible.get(i).value);
+            float half = measureText(label, 18f, true) / 2f;
+            float labelX = Math.max(r.left + half, Math.min(r.right - half, xs[i]));
+            // Keep each label immediately above its own sample, never stack it over another dot.
+            if (labelX - half < lastLabelRight + 6f) continue;
+            float baseline = Math.max(r.top + 24f, ys[i] - 18f);
+            fill(c, Color.argb(235, 253, 254, 255), labelX - half - 4f,
+                    baseline - 22f, labelX + half + 4f, baseline + 3f, 4f);
+            paint.setColor(LIGHT_RED);
+            paint.setStrokeWidth(1f);
+            c.drawLine(xs[i], ys[i] - 7f, labelX, baseline + 5f, paint);
+            text(c, label, labelX, baseline, 18f, LIGHT_RED, Paint.Align.CENTER, true);
+            lastLabelRight = labelX + half;
         }
 
         if (!compact && selectedSampleMs > 0) {
@@ -497,7 +560,7 @@ public final class DashboardView extends View {
         paint.setStrokeWidth(1.2f);
         c.drawLine(x, r.top, x, r.bottom, paint);
         circle(c, Color.WHITE, x, y, 8f);
-        circle(c, TEAL, x, y, 5f);
+        circle(c, LIGHT_RED, x, y, 5f);
 
         String label = formatElapsed(Math.max(0, sample.timestampMs - roundStartMs)) + "   "
                 + String.format(Locale.CHINA, "%.1f μm", sample.value);
@@ -518,7 +581,7 @@ public final class DashboardView extends View {
     private boolean isThicknessFresh(long nowMs) {
         return roundRunning && lastThicknessDataMs > 0
                 && nowMs >= lastThicknessDataMs
-                && nowMs - lastThicknessDataMs <= THICKNESS_HOLD_MS;
+                && nowMs - lastThicknessDataMs < THICKNESS_HOLD_MS;
     }
 
     private float displayedThickness(long nowMs) {
@@ -526,21 +589,21 @@ public final class DashboardView extends View {
             long end = chartEndMs(nowMs);
             ThicknessHistory.Sample selected = thicknessHistory.nearest(
                     selectedSampleMs > 0 ? selectedSampleMs : end,
-                    end - CHART_WINDOW_MS, end);
+                    end - chartWindowMs, end);
             return selected == null ? 0f : selected.value;
         }
         return isThicknessFresh(nowMs) ? telemetry.thickness : 0f;
     }
 
     private long chartEndMs(long nowMs) {
-        if (chartLive || historicalChartEndMs <= 0) return liveChartEnd(nowMs, CHART_WINDOW_MS);
+        if (chartLive || historicalChartEndMs <= 0) return liveChartEnd(nowMs, chartWindowMs);
         return clampHistoricalEnd(historicalChartEndMs, nowMs);
     }
 
     private long clampHistoricalEnd(long requested, long nowMs) {
-        long maximumEnd = liveChartEnd(nowMs, CHART_WINDOW_MS);
+        long maximumEnd = liveChartEnd(nowMs, chartWindowMs);
         long earliest = roundStartMs > 0 ? roundStartMs : thicknessHistory.firstTimestampMs();
-        long minimumEnd = earliest > 0 ? earliest + CHART_WINDOW_MS : maximumEnd;
+        long minimumEnd = earliest > 0 ? earliest + chartWindowMs : maximumEnd;
         if (minimumEnd > maximumEnd) minimumEnd = maximumEnd;
         return Math.max(minimumEnd, Math.min(maximumEnd, requested));
     }
@@ -616,7 +679,37 @@ public final class DashboardView extends View {
 
     private void register(String action, RectF area) { actions.put(action, new RectF(area)); }
 
+    private void chartButton(Canvas c, String action, String label, float left, float right) {
+        RectF area = new RectF(left, 187, right, 232);
+        fill(c, Color.rgb(240, 250, 251), left, area.top, right, area.bottom, 10);
+        stroke(c, LIGHT_BORDER, left, area.top, right, area.bottom, 10, 1.2f);
+        text(c, label, area.centerX(), 217, 18, LIGHT_TEXT, Paint.Align.CENTER, true);
+        register(action, area);
+    }
+
+    private void zoomChart(float factor, float focus) {
+        long now = System.currentTimeMillis();
+        long oldEnd = chartEndMs(now);
+        long oldWindow = chartWindowMs;
+        chartWindowMs = ChartZoom.scale(oldWindow, factor);
+        if (!chartLive) historicalChartEndMs = clampHistoricalEnd(
+                ChartZoom.anchoredEnd(oldEnd, oldWindow, chartWindowMs, focus), now);
+        selectedSampleMs = 0;
+        postInvalidateOnAnimation();
+    }
+
     @Override public boolean onTouchEvent(MotionEvent event) {
+        scaleDetector.onTouchEvent(event);
+        if (scalingGesture) {
+            if (event.getActionMasked() == MotionEvent.ACTION_UP
+                    || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                scalingGesture = false;
+                chartGesture = false;
+                chartMoved = false;
+                pressedAction = null;
+            }
+            return true;
+        }
         float x = (event.getX() - offsetX) / scale;
         float y = (event.getY() - offsetY) / scale;
         if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
@@ -639,9 +732,10 @@ public final class DashboardView extends View {
             if (chartMoved) {
                 long now = System.currentTimeMillis();
                 long requested = chartDragStartEndMs
-                        - Math.round(deltaX * CHART_WINDOW_MS / chartTouchArea.width());
+                        - Math.round(deltaX * chartWindowMs / chartTouchArea.width());
                 historicalChartEndMs = clampHistoricalEnd(requested, now);
-                chartLive = historicalChartEndMs >= liveChartEnd(now, CHART_WINDOW_MS) - 500;
+                chartLive = historicalChartEndMs >= liveChartEnd(now, chartWindowMs)
+                        - Math.min(500, chartWindowMs / 20);
                 if (chartLive) historicalChartEndMs = 0;
                 selectedSampleMs = 0;
                 invalidate();
@@ -659,10 +753,10 @@ public final class DashboardView extends View {
             if (chartGesture) {
                 if (!chartMoved) {
                     long endMs = chartEndMs(System.currentTimeMillis());
-                    long startMs = endMs - CHART_WINDOW_MS;
+                    long startMs = endMs - chartWindowMs;
                     float fraction = Math.max(0f, Math.min(1f,
                             (x - chartTouchArea.left) / chartTouchArea.width()));
-                    long target = startMs + Math.round(fraction * CHART_WINDOW_MS);
+                    long target = startMs + Math.round(fraction * chartWindowMs);
                     ThicknessHistory.Sample nearest = thicknessHistory.nearest(target, startMs, endMs);
                     selectedSampleMs = nearest == null ? 0 : nearest.timestampMs;
                     performClick();
@@ -689,6 +783,12 @@ public final class DashboardView extends View {
                     selectedSampleMs = 0;
                 } else if ("chart_clear".equals(selected)) {
                     clearDisplayedRound();
+                } else if ("chart_zoom_in".equals(selected)) {
+                    zoomChart(2f, .5f);
+                } else if ("chart_zoom_out".equals(selected)) {
+                    zoomChart(.5f, .5f);
+                } else if ("chart_zoom_reset".equals(selected)) {
+                    zoomChart(chartWindowMs / (float) ChartZoom.DEFAULT_MS, .5f);
                 } else if (actionListener != null) {
                     actionListener.onAction(selected);
                 }
@@ -743,13 +843,11 @@ public final class DashboardView extends View {
     }
 
     private void clear(Canvas c, RectF area, float radius) {
-        int save = c.saveLayer(area, null);
         paint.setShader(null);
         paint.setStyle(Paint.Style.FILL);
         paint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.CLEAR));
         c.drawRoundRect(area, radius, radius, paint);
         paint.setXfermode(null);
-        c.restoreToCount(save);
     }
 
     private void text(Canvas c, String value, float x, float baseline, float size,

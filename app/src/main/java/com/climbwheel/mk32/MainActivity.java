@@ -14,8 +14,15 @@ import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
 import android.view.SurfaceView;
+import android.view.ViewGroup;
+import android.view.Gravity;
 import android.graphics.Color;
 import android.widget.FrameLayout;
+import android.widget.BaseAdapter;
+import android.widget.Button;
+import android.widget.LinearLayout;
+import android.widget.ListView;
+import android.widget.TextView;
 
 import com.climbwheel.mk32.model.TelemetrySnapshot;
 import com.climbwheel.mk32.model.SavedMeasurement;
@@ -426,7 +433,47 @@ public final class MainActivity extends Activity implements TelemetrySource.List
                             .setTitle("历史数据")
                             .setNegativeButton("关闭", null);
                     if (files.length == 0) builder.setMessage("暂无保存记录");
-                    else builder.setItems(labels, (dialog, which) -> openSavedMeasurement(files[which]));
+                    else {
+                        ListView list = new ListView(this);
+                        list.setAdapter(new BaseAdapter() {
+                            @Override public int getCount() { return files.length; }
+                            @Override public Object getItem(int position) { return files[position]; }
+                            @Override public long getItemId(int position) { return position; }
+                            @Override public View getView(int position, View recycled, ViewGroup parent) {
+                                LinearLayout row = new LinearLayout(MainActivity.this);
+                                row.setGravity(Gravity.CENTER_VERTICAL);
+                                int pad = Math.round(14 * getResources().getDisplayMetrics().density);
+                                row.setPadding(pad, pad / 2, pad, pad / 2);
+                                TextView label = new TextView(MainActivity.this);
+                                label.setText(labels[position]);
+                                label.setTextSize(18);
+                                label.setTextColor(Color.rgb(25, 42, 55));
+                                label.setPadding(0, pad, pad, pad);
+                                label.setContentDescription("查看记录 " + files[position].getName());
+                                row.addView(label, new LinearLayout.LayoutParams(0,
+                                        ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                                Button delete = new Button(MainActivity.this);
+                                delete.setText("删除");
+                                delete.setTextColor(Color.rgb(218, 57, 70));
+                                delete.setContentDescription("删除记录 " + files[position].getName());
+                                row.addView(delete, new LinearLayout.LayoutParams(
+                                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                                        ViewGroup.LayoutParams.WRAP_CONTENT));
+                                View.OnClickListener open = view -> {
+                                    if (historyDialog != null) historyDialog.dismiss();
+                                    openSavedMeasurement(files[position]);
+                                };
+                                row.setOnClickListener(open);
+                                label.setOnClickListener(open);
+                                delete.setOnClickListener(view -> {
+                                    if (historyDialog != null) historyDialog.dismiss();
+                                    confirmDeleteMeasurement(files[position]);
+                                });
+                                return row;
+                            }
+                        });
+                        builder.setView(list);
+                    }
                     AlertDialog dialog = builder.create();
                     historyDialog = dialog;
                     dialog.setOnDismissListener(ignored -> {
@@ -437,7 +484,7 @@ public final class MainActivity extends Activity implements TelemetrySource.List
                     if (dialog.getWindow() != null) {
                         dialog.getWindow().getDecorView().setSystemUiVisibility(IMMERSIVE_FLAGS);
                         dialog.getWindow().setLayout((int) (dashboard.getWidth() * .72f),
-                                files.length > 5 ? (int) (dashboard.getHeight() * .75f)
+                                files.length > 0 ? (int) (dashboard.getHeight() * .75f)
                                         : WindowManager.LayoutParams.WRAP_CONTENT);
                     }
                 });
@@ -445,6 +492,55 @@ public final class MainActivity extends Activity implements TelemetrySource.List
                 runOnUiThread(() -> dashboard.showMessage("读取失败：" + error.getMessage()));
             }
         });
+    }
+
+    private void confirmDeleteMeasurement(File file) {
+        if (isFinishing() || isDestroyed()) return;
+        boolean[] deleting = {false};
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("删除历史数据")
+                .setMessage("确定删除此记录？\n" + file.getName() + "\n删除后无法在应用内恢复。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("删除", (ignored, which) -> {
+                    deleting[0] = true;
+                    fileExecutor.execute(() -> {
+                        String message;
+                        try {
+                            File selected = file.getCanonicalFile();
+                            File directory = outputDirectory().getCanonicalFile();
+                            if (!directory.equals(selected.getParentFile())
+                                    || !selected.getName().startsWith("task_")
+                                    || !selected.getName().endsWith(".csv")) {
+                                throw new IOException("无效的记录路径");
+                            }
+                            if (!selected.isFile() || !selected.delete()) {
+                                throw new IOException("记录不存在或无法删除");
+                            }
+                            message = "已删除记录";
+                        } catch (IOException error) {
+                            message = "删除失败：" + error.getMessage();
+                        }
+                        String result = message;
+                        runOnUiThread(() -> {
+                            if (isFinishing() || isDestroyed()) return;
+                            if (file.equals(lastSavedFile)) lastSavedFile = null;
+                            dashboard.showMessage(result);
+                            showSavedMeasurements();
+                        });
+                    });
+                }).create();
+        historyDialog = dialog;
+        dialog.setOnDismissListener(ignored -> {
+            if (historyDialog == dialog) historyDialog = null;
+            refreshSystemUi();
+            if (!deleting[0] && !isFinishing() && !isDestroyed()) {
+                dashboard.post(this::showSavedMeasurements);
+            }
+        });
+        dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().getDecorView().setSystemUiVisibility(IMMERSIVE_FLAGS);
+        }
     }
 
     private void openSavedMeasurement(File file) {

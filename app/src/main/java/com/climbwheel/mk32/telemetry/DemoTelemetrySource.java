@@ -41,12 +41,15 @@ public final class DemoTelemetrySource implements TelemetrySource {
             float settling = (float) (5.0 * Math.sin(tick * 0.72) + 1.8 * Math.sin(tick * 1.91));
             float value = 128.3f + settling + (random.nextFloat() - 0.5f) * 0.5f;
             long now = System.currentTimeMillis();
-            if (measurementRunning) {
+            // In the explicit debug waveform test, simulate a short sensor dropout while running.
+            boolean newReading = measurementRunning
+                    && !(automaticWaveTest && tick >= 10 && tick < 15);
+            if (newReading) {
                 lastValue = value;
                 lastThicknessMs = now;
             }
             synchronized (samples) {
-                if (measurementRunning) {
+                if (newReading) {
                     samples.removeFirst();
                     samples.addLast(value);
                 }
