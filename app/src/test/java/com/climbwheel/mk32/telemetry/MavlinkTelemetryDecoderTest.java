@@ -11,6 +11,7 @@ import java.nio.charset.StandardCharsets;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 public final class MavlinkTelemetryDecoderTest {
     @Test public void parsesMavlink1HeartbeatAndNamedThickness() {
@@ -26,6 +27,7 @@ public final class MavlinkTelemetryDecoderTest {
         TelemetrySnapshot measured = feed(decoder, mav1(251, 170, payload.array()));
         assertNotNull(measured);
         assertEquals(128.6f, measured.thickness, 0.001f);
+        assertTrue(measured.thicknessDataMs > 0);
     }
 
     @Test public void mapsNxVehicleState() {

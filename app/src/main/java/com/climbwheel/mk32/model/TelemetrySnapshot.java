@@ -26,6 +26,8 @@ public final class TelemetrySnapshot {
     public final long nxHeartbeatMs;
     public final long stm32DataMs;
     public final long duplexConfirmedMs;
+    /** Local wall-clock time when a new THICKNESS value was decoded. */
+    public final long thicknessDataMs;
 
     private TelemetrySnapshot(Builder b) {
         timestampMs = b.timestampMs;
@@ -46,6 +48,7 @@ public final class TelemetrySnapshot {
         nxHeartbeatMs = b.nxHeartbeatMs;
         stm32DataMs = b.stm32DataMs;
         duplexConfirmedMs = b.duplexConfirmedMs;
+        thicknessDataMs = b.thicknessDataMs;
     }
 
     public static Builder builder() { return new Builder(); }
@@ -58,7 +61,7 @@ public final class TelemetrySnapshot {
                 .faultCode(faultCode).scanSide(scanSide).waveform(waveform)
                 .vehicleState(vehicleState).stm32Connected(stm32Connected)
                 .nxHeartbeatMs(nxHeartbeatMs).stm32DataMs(stm32DataMs)
-                .duplexConfirmedMs(duplexConfirmedMs);
+                .duplexConfirmedMs(duplexConfirmedMs).thicknessDataMs(thicknessDataMs);
     }
 
     public static final class Builder {
@@ -80,6 +83,7 @@ public final class TelemetrySnapshot {
         private long nxHeartbeatMs;
         private long stm32DataMs;
         private long duplexConfirmedMs;
+        private long thicknessDataMs;
 
         public Builder timestampMs(long v) { timestampMs = v; return this; }
         public Builder linkState(LinkState v) { linkState = v; return this; }
@@ -99,6 +103,7 @@ public final class TelemetrySnapshot {
         public Builder nxHeartbeatMs(long v) { nxHeartbeatMs = v; return this; }
         public Builder stm32DataMs(long v) { stm32DataMs = v; return this; }
         public Builder duplexConfirmedMs(long v) { duplexConfirmedMs = v; return this; }
+        public Builder thicknessDataMs(long v) { thicknessDataMs = v; return this; }
         public TelemetrySnapshot build() { return new TelemetrySnapshot(this); }
         private static int clamp(int v, int min, int max) { return Math.max(min, Math.min(max, v)); }
     }

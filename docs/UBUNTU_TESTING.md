@@ -7,7 +7,7 @@
 - Android Platform Tools / adb
 - Android Emulator 37.1.11
 - Android 9 / API 28 AOSP x86_64 系统镜像
-- `MK32_AOSP_API28` 测试设备：1920×1080、横屏、320 dpi、2 GB RAM
+- `MK32_AOSP_API28` 测试设备：当前测试显示配置为 1280×720、横屏；启动脚本使用 2 核、1536 MB RAM
 
 ## 一条命令启动并测试
 
@@ -63,7 +63,7 @@ artifacts/climbwheel-latest.png
 ls -l /dev/kvm
 ```
 
-若 `/dev/kvm` 存在，可以把启动脚本中的 `-accel off` 改为 `-accel on`，模拟器启动和操作速度会提高很多。
+启动脚本已自动检测 `/dev/kvm`：可读写时使用 KVM 硬件加速，否则使用 TCG 软件模拟，无需手动修改 `-accel` 参数。
 
 ## 能测试和不能测试的内容
 

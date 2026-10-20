@@ -1,5 +1,7 @@
 # MK32 ↔ ORIN-NX 双向 MAVLink 协议
 
+当前版本的完整实现说明与已知兼容限制见 [开发文档](DEVELOPMENT_GUIDE.md)。本文描述对端联调约定，简洁界面不再逐项显示早期版本的全部链路诊断文字。
+
 ## 1. 链路与安全边界
 
 ```text
@@ -36,7 +38,7 @@ MK32 SA 拨杆 ──无线遥控──> 天空端 S.Bus OUT ──100000 8E2─
 |---|---|---|---|
 | `HEARTBEAT` | MK32 → NX | 1 Hz | NX 判断地面应用在线 |
 | `HEARTBEAT` | NX → MK32 | 1 Hz；3.5 s 超时 | MK32 显示“遥控器已连接/NX 下行正常” |
-| `PING` | MK32 → NX → MK32 | 2 s；5 s 超时 | 确认上行、下行均正常 |
+| `PING` | MK32 → NX → MK32 | 2 s | 确认上行、下行均正常；当前未单独实现 5 s 应答超时状态显示 |
 | `NAMED_VALUE_INT STM_LINK` | NX → MK32 | 1 Hz；3.5 s 超时 | NX 报告 STM32 数据链路状态 |
 
 收到目标地址为 `0/0` 的 `PING` 请求后，NX 必须原样返回 `time_usec` 和 `seq`，并把 `target_system/target_component` 设置为请求方 `255/190`。
@@ -54,7 +56,7 @@ MK32 SA 拨杆 ──无线遥控──> 天空端 S.Bus OUT ──100000 8E2─
 | 1 | 未解锁 |
 | 2 | 已解锁 |
 
-若 `HEARTBEAT.system_status >= MAV_STATE_CRITICAL (5)`，MK32 强制显示异常。NX 应从 STM32 的 SBUS/SA 判定结果读取车辆状态，不能根据 Android 按钮推测解锁状态。
+收到 `HEARTBEAT.system_status >= MAV_STATE_CRITICAL (5)` 时更新为异常；当前该状态不是锁存值，后续 VEH_STATE 仍可覆盖，NX 应保证两种消息一致。NX 应从 STM32 的 SBUS/SA 判定结果读取车辆状态，不能根据 Android 按钮推测解锁状态。
 
 ## 5. 测厚控制命令
 
@@ -66,7 +68,7 @@ MK32 使用 `COMMAND_LONG`，目标为 `1/191`：
 | 停止测量 | `MAV_CMD_USER_2` / 31011 | NX 停止测厚任务 |
 | 校零 | `MAV_CMD_USER_3` / 31012 | NX 执行测厚传感器校零 |
 
-NX 必须返回同一 command id 的 `COMMAND_ACK`。只有 NX 已接受业务操作后才返回 `MAV_RESULT_ACCEPTED (0)`；不支持、忙、参数错误或执行失败必须返回相应错误。MK32 在 900 ms 内没有收到 ACK 会重发，最多 3 次，重发时 `confirmation` 递增。
+NX 必须返回同一 command id 的 `COMMAND_ACK`。只有 NX 已接受业务操作后才返回 `MAV_RESULT_ACCEPTED (0)`；不支持、忙、参数错误或执行失败必须返回相应错误。MK32 在约 900 ms 内没有收到 ACK 会重发，最多发送 3 次（首次 + 2 次重发），`confirmation` 依次为 0、1、2。
 
 START/STOP/ZERO 只作用于测厚装置，不改变车辆解锁状态。
 
@@ -89,9 +91,9 @@ NX 在 3.5 秒内未收到 STM32 有效数据时必须发送 `STM_LINK=0`；恢�
 python3 nx_mavlink_smoke_test.py /dev/ttyUSB0 --baud 115200 --vehicle-state locked
 ```
 
-MK32 界面应在 3.5 秒内显示：遥控器已连接、NX 下行正常、NX 双向正常、STM32 数据正常、车辆未解锁。点击开始/停止/校零时，NX 终端应输出对应命令及 `ACK accepted`。
+MK32 简洁界面应显示遥控已连接、车辆未解锁；NX 下行/双向与 STM32 的详细诊断通过日志和遥测字段核对，不再分别占用主界面。若从保留的动作接口触发开始/停止/校零，NX 终端应输出对应命令及 `ACK accepted`。当前简洁 UI 未显示早期的全部控制按钮；该脚本也不发送真实 THICKNESS。
 
-断开任一物理链路，相关状态应在 3.5–5 秒内变为断开或待握手。
+断开 NX 下行后，顶栏连接状态应在约 3.5 秒后显示未连接。STM_LINK 当前还可能被其他业务值的接收刷新覆盖，不能把其显示作为独立硬件安全判据，详见开发文档。
 
 ## 8. 真机检查
 

@@ -10,8 +10,8 @@ android {
         applicationId 'com.climbwheel.mk32'
         minSdk 23
         targetSdk 33
-        versionCode 6
-        versionName '0.5.1'
+        versionCode 21
+        versionName '0.8.6'
 
         testInstrumentationRunner 'android.test.InstrumentationTestRunner'
     }
@@ -30,5 +30,9 @@ android {
 }
 
 dependencies {
+    // Keep the player compatible with this project's API 33 build toolchain and MK32 Android 8.
+    def media3_version = '1.1.1'
+    implementation "androidx.media3:media3-exoplayer:$media3_version"
+    implementation "androidx.media3:media3-exoplayer-rtsp:$media3_version"
     testImplementation 'junit:junit:4.13.2'
 }

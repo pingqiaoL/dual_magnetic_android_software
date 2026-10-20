@@ -1,5 +1,7 @@
 # MK32 + ORIN-NX + STM32 开发入口
 
+接手开发请先阅读 [详细开发文档（0.8.6）](DEVELOPMENT_GUIDE.md)。该文档按当前代码整理，区分已实现功能、实机验证结果与已知限制。
+
 项目已经从早期“STM32 直连天空端、Android UART 只读”方案升级为：
 
 - MK32 Android 与 ORIN-NX 通过 UART/MAVLink 双向通信。

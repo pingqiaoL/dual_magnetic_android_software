@@ -142,7 +142,7 @@ public final class MavlinkTelemetryDecoder {
     private static boolean applyNamed(String rawName, float value, TelemetrySnapshot.Builder b, long now) {
         String name = rawName.toUpperCase(Locale.US);
         switch (name) {
-            case "THICKNESS": b.thickness(value); break;
+            case "THICKNESS": b.thickness(value).thicknessDataMs(now); break;
             case "THICK_MAX": b.maximum(value); break;
             case "THICK_MIN": b.minimum(value); break;
             case "THICK_AVG": b.average(value); break;

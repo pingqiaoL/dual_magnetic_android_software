@@ -1,18 +1,26 @@
 package com.climbwheel.mk32.telemetry;
 
+import android.util.Log;
+
 import com.climbwheel.mk32.model.TelemetrySnapshot;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 /** Bidirectional MAVLink transport between the MK32 Android app and ORIN-NX. */
 public final class MavlinkUartSource implements TelemetrySource, MavlinkTelemetryDecoder.ProtocolListener {
+    private static final String TAG = "Mk32Mavlink";
+    private static final String STTY = "/system/bin/stty";
     public static final String DEFAULT_DEVICE = "/dev/ttyHS0";
     private static final long RX_TIMEOUT_MS = 3500;
     private static final long COMMAND_RETRY_MS = 900;
@@ -23,6 +31,9 @@ public final class MavlinkUartSource implements TelemetrySource, MavlinkTelemetr
     private final Object commandLock = new Object();
     private final AtomicInteger sequence = new AtomicInteger();
     private final AtomicInteger pingSequence = new AtomicInteger();
+    private final AtomicLong receivedBytes = new AtomicLong();
+    private final AtomicLong transmittedBytes = new AtomicLong();
+    private final AtomicLong parsedSnapshots = new AtomicLong();
     private final MavlinkTelemetryDecoder decoder = new MavlinkTelemetryDecoder(this);
     private ScheduledExecutorService executor;
     private volatile boolean running;
@@ -42,13 +53,20 @@ public final class MavlinkUartSource implements TelemetrySource, MavlinkTelemetr
         stop();
         this.listener = listener;
         try {
+            String serialSettings = configureSerialPort(device.getAbsolutePath());
             input = new FileInputStream(device);
             output = new FileOutputStream(device);
+            Log.i(TAG, "UART ready: " + oneLine(serialSettings));
         } catch (IOException e) {
             closePorts();
-            listener.onError("无法双向打开 " + device.getAbsolutePath() + "（需要读写权限）", e);
+            Log.e(TAG, "UART initialization failed for " + device.getAbsolutePath(), e);
+            listener.onError("无法配置或双向打开 " + device.getAbsolutePath()
+                    + "（需要 115200 8N1 raw 和读写权限）", e);
             return;
         }
+        receivedBytes.set(0);
+        transmittedBytes.set(0);
+        parsedSnapshots.set(0);
         running = true;
         writeErrorReported = false;
         executor = Executors.newScheduledThreadPool(2);
@@ -64,9 +82,20 @@ public final class MavlinkUartSource implements TelemetrySource, MavlinkTelemetr
             byte[] buffer = new byte[1024];
             int count;
             while (running && (count = input.read(buffer)) >= 0) {
+                long total = receivedBytes.addAndGet(count);
+                Log.d(TAG, "RX " + count + " B (total " + total + "): "
+                        + hex(buffer, count, 96));
                 for (int i = 0; i < count; i++) {
                     TelemetrySnapshot snapshot = decoder.accept(buffer[i] & 0xff);
                     if (snapshot != null) {
+                        long parsed = parsedSnapshots.incrementAndGet();
+                        Log.d(TAG, "PARSED #" + parsed
+                                + " link=" + snapshot.linkState
+                                + " measure=" + snapshot.measureState
+                                + " vehicle=" + snapshot.vehicleState
+                                + " stm32=" + snapshot.stm32Connected
+                                + " thickness=" + snapshot.thickness
+                                + " thicknessAt=" + snapshot.thicknessDataMs);
                         lastRxAt = System.currentTimeMillis();
                         Listener current = listener;
                         if (current != null) current.onTelemetry(snapshot);
@@ -177,6 +206,9 @@ public final class MavlinkUartSource implements TelemetrySource, MavlinkTelemetr
                 if (output == null) return false;
                 output.write(bytes);
                 output.flush();
+                long total = transmittedBytes.addAndGet(bytes.length);
+                Log.d(TAG, "TX " + bytes.length + " B (total " + total + "): "
+                        + hex(bytes, bytes.length, 96));
                 return true;
             } catch (IOException e) {
                 if (!writeErrorReported) {
@@ -221,6 +253,78 @@ public final class MavlinkUartSource implements TelemetrySource, MavlinkTelemetr
     }
 
     private int nextSequence() { return sequence.getAndIncrement() & 0xff; }
+
+    /** Configure the MK32 UART before Java streams open it; opening a tty does not set termios. */
+    private static String configureSerialPort(String path) throws IOException {
+        runStty("-F", path, "raw", "115200");
+        // MK32's Android 9 toybox leaves some local echo flags unchanged after "raw".
+        runStty("-F", path, "-echo", "-echoe", "-echok", "-echonl",
+                "-echoprt", "-echoctl", "-echoke", "-iexten",
+                "-icrnl", "-inlcr", "-igncr", "-ixon", "-ixoff",
+                "-inpck", "-istrip", "-iuclc", "-ixany", "-imaxbel", "-iutf8");
+        String settings = runStty("-F", path, "-a");
+        String normalized = " " + oneLine(settings) + " ";
+        requireSetting(normalized.contains("speed 115200 baud"), "115200 baud", settings);
+        requireSetting(normalized.contains(" cs8 "), "8 data bits", settings);
+        requireSetting(normalized.contains(" -parenb "), "no parity", settings);
+        requireSetting(normalized.contains(" -cstopb "), "1 stop bit", settings);
+        requireSetting(normalized.contains(" -icanon "), "non-canonical/raw input", settings);
+        requireSetting(normalized.contains(" -echo "), "echo disabled", settings);
+        requireSetting(normalized.contains(" -istrip "), "8-bit input preserved", settings);
+        requireSetting(normalized.contains(" -icrnl "), "CR bytes preserved", settings);
+        requireSetting(normalized.contains(" -ixon "), "software flow control disabled", settings);
+        return settings;
+    }
+
+    private static String runStty(String... arguments) throws IOException {
+        String[] command = new String[arguments.length + 1];
+        command[0] = STTY;
+        System.arraycopy(arguments, 0, command, 1, arguments.length);
+        Process process = new ProcessBuilder(command).redirectErrorStream(true).start();
+        StringBuilder output = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+                process.getInputStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (output.length() > 0) output.append('\n');
+                output.append(line);
+            }
+        }
+        try {
+            int result = process.waitFor();
+            if (result != 0) {
+                throw new IOException("stty exit=" + result + ": " + oneLine(output.toString()));
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("等待 stty 配置串口时被中断", e);
+        }
+        return output.toString();
+    }
+
+    private static void requireSetting(boolean condition, String expected, String actual)
+            throws IOException {
+        if (!condition) {
+            throw new IOException("串口未进入 " + expected + "；实际：" + oneLine(actual));
+        }
+    }
+
+    private static String oneLine(String value) {
+        return value.replace('\n', ' ').replace('\r', ' ').trim().replaceAll("\\s+", " ");
+    }
+
+    private static String hex(byte[] bytes, int count, int limit) {
+        int shown = Math.min(count, limit);
+        StringBuilder out = new StringBuilder(shown * 3 + 20);
+        for (int i = 0; i < shown; i++) {
+            if (i > 0) out.append(' ');
+            int value = bytes[i] & 0xff;
+            if (value < 0x10) out.append('0');
+            out.append(Integer.toHexString(value));
+        }
+        if (shown < count) out.append(" ... +").append(count - shown).append(" B");
+        return out.toString();
+    }
 
     @Override public String description() { return "MK32 ↔ ORIN-NX MAVLink " + device.getAbsolutePath(); }
 
